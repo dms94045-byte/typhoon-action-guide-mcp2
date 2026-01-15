@@ -4,9 +4,8 @@ import contextlib
 
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from mcp.server.fastmcp import FastMCP
 
@@ -16,47 +15,54 @@ from typhoon_mcp.prompts import SYSTEM_PROMPT
 
 
 # =========================================================
-# MCP Core
+# ✅ DNS rebinding/Host 검사 끄기 (PlayMCP 프록시 환경 필수)
 # =========================================================
+TransportSecuritySettings = None
+for _path in (
+    "mcp.server.transport_security",
+    "mcp.server.security",
+    "mcp.server.transport.security",
+):
+    try:
+        mod = __import__(_path, fromlist=["TransportSecuritySettings"])
+        TransportSecuritySettings = getattr(mod, "TransportSecuritySettings")
+        break
+    except Exception:
+        pass
 
-mcp = FastMCP(
-    "Typhoon Action Guide MCP",
-    json_response=True,
-)
+if TransportSecuritySettings is None:
+    # 여기로 떨어지면, 네 설치된 mcp 패키지에 보안 설정이 없다는 뜻이라
+    # requirements에서 mcp 버전을 올려야 함 (아래 2번 참고)
+    mcp = FastMCP("Typhoon Action Guide MCP", json_response=True)
+else:
+    mcp = FastMCP(
+        "Typhoon Action Guide MCP",
+        json_response=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        ),
+    )
 
 client = KmaTyphoonClient()
 
 
 @mcp.prompt()
 def typhoon_action_guide_system_prompt() -> str:
-    """태풍 대응 행동 가이드 MCP 시스템 프롬프트"""
     return SYSTEM_PROMPT
 
 
 @mcp.tool()
 async def typhoon_action_guide(user_message: str) -> str:
-    """사용자 메시지를 기반으로 태풍 대응 행동 가이드를 생성합니다."""
     return await build_response(user_message, client)
 
 
-# =========================================================
-# Basic Endpoints
-# =========================================================
+async def health(request):
+    return JSONResponse({"ok": True, "name": "Typhoon Action Guide MCP"})
+
 
 async def root(request):
-    return PlainTextResponse(
-        "Typhoon Action Guide MCP is running.\n"
-        "MCP endpoint: /mcp"
-    )
+    return PlainTextResponse("Typhoon Action Guide MCP is running. MCP endpoint is /mcp")
 
-
-async def health(request):
-    return JSONResponse({"ok": True})
-
-
-# =========================================================
-# Lifespan (FastMCP 세션 관리)
-# =========================================================
 
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette):
@@ -64,41 +70,20 @@ async def lifespan(app: Starlette):
         yield
 
 
-# =========================================================
-# Starlette App (중요)
-# =========================================================
-
-app = Starlette(
+# ✅ /mcp 는 streamable_http_app()가 처리 (기본이 /mcp)
+starlette_app = Starlette(
     routes=[
         Route("/", root, methods=["GET"]),
         Route("/health", health, methods=["GET"]),
-        # FastMCP는 자체적으로 /mcp 경로를 노출함
-        Route("/mcp", mcp.streamable_http_app(), methods=["POST"]),
+        Mount("/", app=mcp.streamable_http_app()),
     ],
     lifespan=lifespan,
 )
 
-# =========================================================
-# Middleware (Render + PlayMCP 대응 핵심)
-# =========================================================
-
-# 1️⃣ Host 검증 완화 (Render 프록시 대응)
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=["*"],
-)
-
-# 2️⃣ CORS (PlayMCP 콘솔 테스트용)
-app.add_middleware(
-    CORSMiddleware,
+app = CORSMiddleware(
+    starlette_app,
     allow_origins=["*"],
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["Mcp-Session-Id"],
 )
-
-# =========================================================
-# uvicorn 실행
-# =========================================================
-# Render Start Command:
-# uvicorn app:app --host 0.0.0.0 --port $PORT --proxy-headers
