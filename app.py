@@ -14,7 +14,33 @@ from typhoon_mcp.logic import build_response
 from typhoon_mcp.prompts import SYSTEM_PROMPT
 
 
-mcp = FastMCP("Typhoon Action Guide MCP", json_response=True)
+# ✅ (중요) PlayMCP/프록시 환경에서 421(Invalid Host header) 방지:
+# MCP SDK 버전에 따라 import 경로가 다를 수 있어, 여러 경로를 시도합니다.
+TransportSecuritySettings = None
+for _path in (
+    "mcp.server.transport_security",
+    "mcp.server.security",
+    "mcp.server.transport.security",
+):
+    try:
+        mod = __import__(_path, fromlist=["TransportSecuritySettings"])
+        TransportSecuritySettings = getattr(mod, "TransportSecuritySettings")
+        break
+    except Exception:
+        pass
+
+if TransportSecuritySettings:
+    mcp = FastMCP(
+        "Typhoon Action Guide MCP",
+        json_response=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        ),
+    )
+else:
+    # 구버전/특이 버전 대비: 보안 설정 클래스를 못 찾으면 기본 FastMCP로라도 실행
+    mcp = FastMCP("Typhoon Action Guide MCP", json_response=True)
+
 client = KmaTyphoonClient()
 
 
@@ -44,33 +70,19 @@ async def lifespan(app: Starlette):
         yield
 
 
-def _make_streamable_app():
-    """
-    MCP SDK 버전에 따라 streamable_http_app() 시그니처가 달라질 수 있어
-    허용 호스트 옵션이 있으면 사용하고, 없으면 기본값으로 생성합니다.
-    """
-    try:
-        # 일부 버전에서 allowed_hosts 인자를 지원할 수 있어 선제 대응
-        return mcp.streamable_http_app(allowed_hosts=["*"])
-    except TypeError:
-        return mcp.streamable_http_app()
-
-
 # Streamable HTTP 앱을 /mcp 경로로 제공 (기본값)
-streamable_app = _make_streamable_app()
-
 starlette_app = Starlette(
     routes=[
         Route("/", root, methods=["GET"]),
         Route("/health", health, methods=["GET"]),
-        Mount("/", app=streamable_app),  # exposes /mcp by default
+        Mount("/", app=mcp.streamable_http_app()),  # exposes /mcp by default
     ],
     lifespan=lifespan,
 )
 
-# 1) CORS: 브라우저 기반 MCP 클라이언트/테스터 호환
-#    (Streamable HTTP는 Mcp-Session-Id 헤더를 사용)
-cors_app = CORSMiddleware(
+# CORS: 브라우저 기반 MCP 클라이언트/테스터 호환
+# (Streamable HTTP는 Mcp-Session-Id 헤더를 사용)
+app = CORSMiddleware(
     starlette_app,
     allow_origins=["*"],
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
@@ -78,9 +90,5 @@ cors_app = CORSMiddleware(
     expose_headers=["Mcp-Session-Id"],
 )
 
-
 # uvicorn entry:
-#   uvicorn app:app --host 0.0.0.0 --port $PORT
-
-# 최종 ASGI app
-app = cors_app
+#   uvicorn app:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
