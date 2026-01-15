@@ -6,7 +6,6 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Mount, Route
 from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from mcp.server.fastmcp import FastMCP
 
@@ -79,12 +78,9 @@ cors_app = CORSMiddleware(
     expose_headers=["Mcp-Session-Id"],
 )
 
-# 2) Trusted Host: PlayMCP/프록시 환경에서 Host 헤더가 달라져도 421로 튕기지 않도록 허용
-#    (심사용/프록시 환경 안정성 최우선)
-app = TrustedHostMiddleware(
-    cors_app,
-    allowed_hosts=["*"],
-)
 
 # uvicorn entry:
 #   uvicorn app:app --host 0.0.0.0 --port $PORT
+
+# 최종 ASGI app
+app = cors_app
