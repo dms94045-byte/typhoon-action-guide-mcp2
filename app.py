@@ -4,8 +4,9 @@ import contextlib
 
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
-from starlette.routing import Mount, Route
+from starlette.routing import Route
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from mcp.server.fastmcp import FastMCP
 
@@ -14,32 +15,14 @@ from typhoon_mcp.logic import build_response
 from typhoon_mcp.prompts import SYSTEM_PROMPT
 
 
-# ✅ (중요) PlayMCP/프록시 환경에서 421(Invalid Host header) 방지:
-# MCP SDK 버전에 따라 import 경로가 다를 수 있어, 여러 경로를 시도합니다.
-TransportSecuritySettings = None
-for _path in (
-    "mcp.server.transport_security",
-    "mcp.server.security",
-    "mcp.server.transport.security",
-):
-    try:
-        mod = __import__(_path, fromlist=["TransportSecuritySettings"])
-        TransportSecuritySettings = getattr(mod, "TransportSecuritySettings")
-        break
-    except Exception:
-        pass
+# =========================================================
+# MCP Core
+# =========================================================
 
-if TransportSecuritySettings:
-    mcp = FastMCP(
-        "Typhoon Action Guide MCP",
-        json_response=True,
-        transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=False
-        ),
-    )
-else:
-    # 구버전/특이 버전 대비: 보안 설정 클래스를 못 찾으면 기본 FastMCP로라도 실행
-    mcp = FastMCP("Typhoon Action Guide MCP", json_response=True)
+mcp = FastMCP(
+    "Typhoon Action Guide MCP",
+    json_response=True,
+)
 
 client = KmaTyphoonClient()
 
@@ -56,13 +39,24 @@ async def typhoon_action_guide(user_message: str) -> str:
     return await build_response(user_message, client)
 
 
-async def health(request):
-    return JSONResponse({"ok": True, "name": "Typhoon Action Guide MCP"})
-
+# =========================================================
+# Basic Endpoints
+# =========================================================
 
 async def root(request):
-    return PlainTextResponse("Typhoon Action Guide MCP is running. MCP endpoint is /mcp")
+    return PlainTextResponse(
+        "Typhoon Action Guide MCP is running.\n"
+        "MCP endpoint: /mcp"
+    )
 
+
+async def health(request):
+    return JSONResponse({"ok": True})
+
+
+# =========================================================
+# Lifespan (FastMCP 세션 관리)
+# =========================================================
 
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette):
@@ -70,25 +64,41 @@ async def lifespan(app: Starlette):
         yield
 
 
-# Streamable HTTP 앱을 /mcp 경로로 제공 (기본값)
-starlette_app = Starlette(
+# =========================================================
+# Starlette App (중요)
+# =========================================================
+
+app = Starlette(
     routes=[
         Route("/", root, methods=["GET"]),
         Route("/health", health, methods=["GET"]),
-        Mount("/", app=mcp.streamable_http_app()),  # exposes /mcp by default
+        # FastMCP는 자체적으로 /mcp 경로를 노출함
+        Route("/mcp", mcp.streamable_http_app(), methods=["POST"]),
     ],
     lifespan=lifespan,
 )
 
-# CORS: 브라우저 기반 MCP 클라이언트/테스터 호환
-# (Streamable HTTP는 Mcp-Session-Id 헤더를 사용)
-app = CORSMiddleware(
-    starlette_app,
+# =========================================================
+# Middleware (Render + PlayMCP 대응 핵심)
+# =========================================================
+
+# 1️⃣ Host 검증 완화 (Render 프록시 대응)
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"],
+)
+
+# 2️⃣ CORS (PlayMCP 콘솔 테스트용)
+app.add_middleware(
+    CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["Mcp-Session-Id"],
 )
 
-# uvicorn entry:
-#   uvicorn app:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
+# =========================================================
+# uvicorn 실행
+# =========================================================
+# Render Start Command:
+# uvicorn app:app --host 0.0.0.0 --port $PORT --proxy-headers
