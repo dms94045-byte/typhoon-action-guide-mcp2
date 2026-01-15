@@ -134,6 +134,29 @@ def summarize_track(points: list[TyphoonPoint], region: Optional[Region], now: d
 async def build_response(user_text: str, client: KmaTyphoonClient) -> str:
     now = dt.datetime.now(KST)
 
+    # --- [추가] PlayMCP 선택지(1/2/3) 입력을 환경 키워드로 정규화 ---
+    raw = (user_text or "").strip()
+
+    # 숫자만 들어온 경우(예: "1", "2", "3") 또는 "1번", "1️⃣" 같은 입력도 대응
+    # -> infer_environment가 알아먹을 수 있는 텍스트로 바꿔준다.
+    digit = None
+    if raw in {"1", "2", "3"}:
+        digit = raw
+    else:
+        # "1번", "1.", "1️⃣", "1 )" 등에서 첫 숫자만 뽑기
+        for ch in raw:
+            if ch in {"1", "2", "3"}:
+                digit = ch
+                break
+
+    if digit == "1":
+        user_text = "해안·섬"
+    elif digit == "2":
+        user_text = "내륙"
+    elif digit == "3":
+        user_text = "산간·하천"
+    # --- [추가 끝] ---
+
     region = find_region(user_text)
     env = infer_environment(user_text) or ("해안·섬" if (region and region.name in ["제주", "제주시", "서귀포", "부산", "여수", "목포", "남해안", "동해안", "서해안"]) else None)
     intent = infer_intent(user_text)
@@ -170,7 +193,7 @@ async def build_response(user_text: str, client: KmaTyphoonClient) -> str:
 
     if not tmFc or not points:
         # 예보 자체가 없을 때
-        base = fmt_kst_baseline(tmFc) if tmFc else "현재 태풍 예보 데이터를 찾지 못했습니다."
+        base = fmt_kst_baseline(tmFc) if tmFc else "현재는 태풍 예보가 없없습니다."
         return (
             f"[기준 정보]\n{base}\n\n"
             "[태풍 이동 및 시간 요약]\n"
